@@ -1,8 +1,13 @@
-module adderclock(a,b,clk,out);
-  input [7:0]a;
-  input [7:0]b;
-  input clk;
-  output reg [8:0]out;
+module adder(clk,rst,in1,in2,out);
+  input clk,rst;
+  input [3:0]in1,in2;
+  output reg [4:0]out;
+  
   always@(posedge clk)
-    out=a+b;
+    begin
+      if(!rst)
+        out=10;
+      else
+        out=in1+in2;
+    end
 endmodule
