@@ -1,144 +1,217 @@
-interface adderclock_int;
-  logic [7:0]a;
-  logic [7:0]b;
+interface inter;
   logic clk;
-  logic [8:0]out;
+  logic rst;
+  logic [3:0]in1;
+  logic [3:0]in2;
+  logic [4:0]out;
 endinterface
 
+
 class transaction;
-  rand logic[7:0]a;
-  rand logic[7:0]b;
+  rand bit[3:0]in1;
+  rand bit[3:0]in2;
+  bit clk;
+  bit rst;
+  bit [4:0]out;
   
-  rand logic clk;
-  logic[8:0]out;
-    
+  function void display(string name,bit clk=0,bit rst=1);
+    $display("[%s] Value of in1:%d in2:%d clk:%d rst:%d out:%d",name,in1,in2,clk,rst,out);
+  endfunction
 endclass
 
 class generator;
-  mailbox gen2drv;
   transaction trans;
-  
-  function new(mailbox gen2drv);
+  mailbox gen2drv;
+  int count;
+  event done;
+  function new(mailbox gen2drv,event done);
     this.gen2drv=gen2drv;
+    this.done=done;
   endfunction
   
-  task main();
-    
-      
-        for(int i=0;i<10;i++)
-          begin
-            trans=new();
-            
-            assert(trans.randomize())
-              $display("%t [GEN] GENERATED DATA OF A IS %d,B IS %d,CLK IS %d and ",$time,trans.a,trans.b,trans.clk);
-            else
-              $display("FAILED TO GENERATE");
-            gen2drv.put(trans);
-            #10;
-          end
-      
+  task run();
+    begin
+      repeat(count)
+        begin
+          trans=new();
+          trans.randomize();
+          trans.display("GEN");
+          gen2drv.put(trans);
+          #1;
+          ->done;
+          #45;
+        end
+    end
   endtask
 endclass
 
 class driver;
   transaction trans;
   mailbox gen2drv;
-  virtual adderclock_int acif;
-  function new(mailbox gen2drv);
-    this.gen2drv=gen2drv;
+  event done;
+  event mon_done; 
+  virtual inter inf;
+  
+  function new(mailbox gen2drv, virtual inter inf, event done, event mon_done);
+    this.gen2drv = gen2drv;
+    this.inf = inf;
+    this.done = done;
+    this.mon_done = mon_done;
   endfunction
   
-  task main();
+  task reset();
+    begin
+      inf.rst <= 0;
+      @(posedge inf.clk);
+      inf.rst <= 1;
+      $display("DUT RESET DONE");
+    end
+  endtask
+  
+  task run();
     forever
       begin
+        @(done);              
+        @(posedge inf.clk);   
+        trans = new();
         gen2drv.get(trans);
-        acif.a=trans.a;
-        acif.b=trans.b;
-        acif.clk=trans.clk;
-        $display("%t VALUE SENT TO INTERFACE",$time);
+        inf.in1 = trans.in1;
+        inf.in2 = trans.in2;
+        inf.rst = 1;
+        trans.display("DRV", inf.rst, inf.clk);
+        
+        #1;                   
+        -> mon_done;          
         #10;
       end
   endtask
 endclass
-    
-  
+
+
+
 class monitor;
   transaction trans;
-  virtual adderclock_int acif;
-  mailbox mon2sco;
+  mailbox mon2scb;
+  event mon_done;       
+  virtual inter inf;
   
-  function new(mailbox mon2sco);
-    this.mon2sco=mon2sco;
+  function new(mailbox mon2scb, virtual inter inf, event mon_done);
+    this.mon2scb = mon2scb;
+    this.inf = inf;
+    this.mon_done = mon_done;
   endfunction
   
-  task main();
-    repeat(10) 
+  task run();
+    forever
       begin
-        trans=new();
-        trans.a=acif.a;
-        trans.b=acif.b;
-        trans.clk=acif.clk;
-        trans.out=acif.out;
-        $display("%t ---------------RECIEVED DATA FROM DUT OF A IS %d B IS %d CLK IS %d and OUT IS %d----------------",$time,trans.a,trans.b,trans.clk,trans.out);
-        mon2sco.put(trans);
+        @(mon_done);          
+        @(posedge inf.clk);
+        #1;
+        trans = new();
+        trans.in1 = inf.in1;
+        trans.in2 = inf.in2;
+        trans.rst = inf.rst;
+        trans.clk = inf.clk;
+        trans.out = inf.out;
+        trans.display("MON", inf.rst, inf.clk);
+        mon2scb.put(trans);
         #10;
       end
-    
   endtask
 endclass
 
 class scoreboard;
-  mailbox mon2sco;
+  mailbox mon2scb;
   transaction trans;
-  function new(mailbox mon2sco);
-    this.mon2sco=mon2sco;
+  function new(mailbox mon2scb);
+    this.mon2scb=mon2scb;
   endfunction
   
-  task main();
-    repeat(10)
+  task run();
+    forever
       begin
-        trans=new();
-        mon2sco.get(trans);
+        mon2scb.get(trans);
+        if((trans.in1+trans.in2==trans.out))
           begin
-            if(trans.a+trans.b==trans.out)
-              $display("%t PASSED",$time);
-            else
-              $display("%t FAILED",$time);
-            #10;
+          	$display("MATCHED");
+        	$display("---------------------------------------------------------------------------------------------------------------------------");
           end
+        else
+          $display("FAILED");
       end
   endtask
 endclass
-       
-            
-  
+        
 
-
-
-module tb();
-  mailbox gen2drv;
-  mailbox mon2sco;
+class environment;
   generator gen;
   driver drv;
   monitor mon;
-  scoreboard sco;
-  adderclock_int acif();
-  adderclock a1(.a(acif.a),.b(acif.b),.clk(acif.clk),.out(acif.out));
+  scoreboard scb;
+  mailbox gen2drv;
+  mailbox mon2scb;
+  event done;
+  event mon_done;   
+
+  function new(virtual inter inf);
+    gen2drv = new();
+    mon2scb = new();
+    gen = new(gen2drv, done);
+    gen.count = 10;
+    drv = new(gen2drv, inf, done, mon_done); 
+    mon = new(mon2scb, inf, mon_done);
+    scb=new(mon2scb);
+  endfunction
+  
+  task pre_test();
+    drv.reset();
+  endtask
+  
+  task test;
+    fork
+      gen.run();
+      drv.run();
+      mon.run();
+      scb.run();
+    join
+  endtask
+  
+  task run();
+    begin
+      pre_test();
+      test();
+    end
+  endtask
+endclass
+
+  
+  
+module tb;
+  environment env;
+  inter inf();
+  
+  adder add(inf.clk,inf.rst,inf.in1,inf.in2,inf.out);
+  
   initial
     begin
-      gen2drv=new();
-      mon2sco=new();
-      gen=new(gen2drv);
-      drv=new(gen2drv);
-      mon=new(mon2sco);
-      sco=new(mon2sco);
-      drv.acif=acif;
-      mon.acif=acif;
-      fork
-         #5 gen.main();
-         #5 drv.main();
-         #10 mon.main();
-         #15 sco.main();
-      join
+      inf.clk=0;
     end
-endmodule  
+  always
+    #10 inf.clk=~inf.clk;
+  
+  initial
+    begin
+      env=new(inf);
+      env.run();
+    end
+  
+  initial
+    begin
+      #1000;
+      $finish();
+    end
+  
+    
+  
+endmodule
+    
